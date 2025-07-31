@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bpfman-init-container-test
+spec:
+  initContainers:
+  - name: bpfman-init
+    image: quay.io/akaris/bpfman-init-container:latest
+    imagePullPolicy: Always
+    securityContext:
+      privileged: true
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -eux
+      get_ids() {
+        bpfman list programs --application XDPCounter | awk '/XDPCounter/ {print $1}'
+      }
+
+      # Clean up first, just in case
+      for ID in $(get_ids); do
+        bpfman unload $ID
+      done
+
+      # Now, attach
+      bpfman list programs
+      bpfman list links
+      bpfman load file -p /usr/local/lib/ebpf/go-xdp-counter/bpf_x86_bpfel.o --programs xdp:xdp_stats --application XDPCounter
+      ID=$(get_ids | tail)
+      bpfman attach $ID xdp --iface eth0 --priority 100
+      echo "ID=$ID" > $VOLUME_DIR/environment
+      ls -al /sys/fs/bpf
+    env:
+    - name: VOLUME_DIR
+      value: /shared
+    volumeMounts:
+    - name: shared-volume
+      mountPath: /shared
+    - name: go-app-counter-maps
+      mountPath: /run/app/maps
+      readOnly: true
+    - name: bpfman-volume
+      mountPath: /run/bpfman
+    - name: bpfman-lib-volume
+      mountPath: /var/lib/bpfman
+    - name: bpf-fs-volume
+      mountPath: /sys/fs/bpf
+  containers:
+  - name: main-container
+    image: quay.io/akaris/bpfman-init-container:latest
+    securityContext:
+      privileged: true
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -eux
+      ls -al /run/xdp/maps
+      source "${VOLUME_DIR}/environment"
+      /usr/local/lib/ebpf/go-xdp-counter/go-xdp-counter --crd
+    env:
+    - name: VOLUME_DIR
+      value: /shared
+    volumeMounts:
+    - name: shared-volume
+      mountPath: /shared
+    - name: go-app-counter-maps
+      mountPath: /run/app/maps
+      readOnly: true
+    - name: bpfman-volume
+      mountPath: /run/bpfman
+    - name: bpfman-lib-volume
+      mountPath: /var/lib/bpfman
+    - name: bpf-fs-volume
+      mountPath: /run/xdp/maps
+  volumes:
+  - name: shared-volume
+    emptyDir: {}
+  - name: go-app-counter-maps
+    emptyDir: {}
+  - name: bpfman-volume
+    hostPath:
+      path: /run/bpfman
+      type: DirectoryOrCreate
+  - name: bpfman-lib-volume
+    hostPath:
+      path: /var/lib/bpfman
+      type: DirectoryOrCreate
+  - name: bpf-fs-volume
+    hostPath:
+      path: /sys/fs/bpf
+      type: Directory
+    # csi:
+    #   driver: csi.bpfman.io
+    #   volumeAttributes:
+    #     csi.bpfman.io/program: app-counter
+    #     csi.bpfman.io/maps: kprobe_stats_map,tracepoint_stats_map,tc_stats_map,tcx_stats_map,uprobe_stats_map,xdp_stats_map
+  restartPolicy: Never
