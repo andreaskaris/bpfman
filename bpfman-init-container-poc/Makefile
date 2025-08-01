@@ -1,14 +1,14 @@
 
-TAG ?= latest
+IMAGE ?= quay.io/akaris/bpfman-init-container:latest
 NAMESPACE ?= bpftest
 
 .PHONY: build
 build:
-	podman build -t quay.io/akaris/bpfman-init-container:$(TAG) -f ../Containerfile.bpfman.initcontainer ../.
+	podman build -t $(IMAGE) -f ../Containerfile.bpfman.initcontainer ../.
 
 .PHONY: push
 push:
-	podman push quay.io/akaris/bpfman-init-container:$(TAG)
+	podman push $(IMAGE)
 
 .PHONY: deploy-namespace
 deploy-namespace: 
@@ -20,8 +20,9 @@ deploy-namespace:
 	kubectl label ns $(NAMESPACE) pod-security.kubernetes.io/audit=privileged --overwrite=true
 
 .PHONY: deploy
+deploy: export IMAGE_NAME = $(IMAGE)
 deploy: deploy-namespace
-	kubectl apply -f bpfman-init-container-test.yaml
+	envsubst '$$IMAGE_NAME' < bpfman-init-container-test.yaml | kubectl apply -f -
 
 .PHONY: undeploy
 undeploy:

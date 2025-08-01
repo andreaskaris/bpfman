@@ -4,11 +4,29 @@ metadata:
   name: bpfman-init-container-test
 spec:
   initContainers:
+  # bpfman-init runs as a sidecar container (restartPolicy: Always). That way, its lifecycle preStop can delete
+  # the program. In addition, it has cleanup logic on startup, just in case something fails on preStop.
   - name: bpfman-init
-    image: quay.io/akaris/bpfman-init-container:latest
+    image: $IMAGE_NAME
     imagePullPolicy: Always
     securityContext:
-      privileged: true
+     privileged: true
+    # restartPolicy "Always" makes this a sidecar
+    # https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/
+    restartPolicy: Always
+    lifecycle:
+      preStop:
+        exec:
+          command: 
+          - "/bin/sh"
+          - "-c"
+          - |
+            get_ids() {
+              bpfman list programs --application XDPCounter | awk '/XDPCounter/ {print $1}'
+            }
+            for ID in $(get_ids); do
+              bpfman unload $ID
+            done
     command: ["/bin/bash", "-c"]
     args:
     - |
@@ -23,22 +41,21 @@ spec:
       done
 
       # Now, attach
-      bpfman list programs
-      bpfman list links
-      bpfman load file -p /usr/local/lib/ebpf/go-xdp-counter/bpf_x86_bpfel.o --programs xdp:xdp_stats --application XDPCounter
+      bpfman load file -p /usr/local/lib/ebpf/go-xdp-counter/bpf_x86_bpfel.o \
+                       --programs xdp:xdp_stats \
+                       --application XDPCounter
+                       # Would be needed if bpfman CSI approach actually worked
+                       # --metadata bpfman.io/ProgramName=xdp_stats
       ID=$(get_ids | tail)
       bpfman attach $ID xdp --iface eth0 --priority 100
-      echo "ID=$ID" > $VOLUME_DIR/environment
-      ls -al /sys/fs/bpf
-    env:
-    - name: VOLUME_DIR
-      value: /shared
+      > /tmp/ready
+      sleep infinity
+    startupProbe:
+      exec:
+        command:
+        - cat
+        - /tmp/ready
     volumeMounts:
-    - name: shared-volume
-      mountPath: /shared
-    - name: go-app-counter-maps
-      mountPath: /run/app/maps
-      readOnly: true
     - name: bpfman-volume
       mountPath: /run/bpfman
     - name: bpfman-lib-volume
@@ -47,36 +64,16 @@ spec:
       mountPath: /sys/fs/bpf
   containers:
   - name: main-container
-    image: quay.io/akaris/bpfman-init-container:latest
-    securityContext:
-      privileged: true
+    image: $IMAGE_NAME
     command: ["/bin/bash", "-c"]
     args:
     - |
       set -eux
-      ls -al /run/xdp/maps
-      source "${VOLUME_DIR}/environment"
       /usr/local/lib/ebpf/go-xdp-counter/go-xdp-counter --crd
-    env:
-    - name: VOLUME_DIR
-      value: /shared
     volumeMounts:
-    - name: shared-volume
-      mountPath: /shared
-    - name: go-app-counter-maps
-      mountPath: /run/app/maps
-      readOnly: true
-    - name: bpfman-volume
-      mountPath: /run/bpfman
-    - name: bpfman-lib-volume
-      mountPath: /var/lib/bpfman
-    - name: bpf-fs-volume
-      mountPath: /run/xdp/maps
+    - name: xdp-stats-map
+      mountPath: /run/xdp/maps/xdp_stats_map
   volumes:
-  - name: shared-volume
-    emptyDir: {}
-  - name: go-app-counter-maps
-    emptyDir: {}
   - name: bpfman-volume
     hostPath:
       path: /run/bpfman
@@ -89,9 +86,19 @@ spec:
     hostPath:
       path: /sys/fs/bpf
       type: Directory
-    # csi:
-    #   driver: csi.bpfman.io
-    #   volumeAttributes:
-    #     csi.bpfman.io/program: app-counter
-    #     csi.bpfman.io/maps: kprobe_stats_map,tracepoint_stats_map,tc_stats_map,tcx_stats_map,uprobe_stats_map,xdp_stats_map
+  # Chicken egg problem. This fails with
+  # "Bpfman Program xdp_stats not found" unless we preload a dummy map
+  # manually with:
+  # bpfman load file -p /usr/local/lib/ebpf/go-xdp-counter/bpf_x86_bpfel.o --programs xdp:xdp_stats --application XDPCounter --metadata bpfman.io/ProgramName=xdp_stats
+  # due to bpfman-api/src/bin/rpc/storage.rs:170
+  # - name: xdp-stats-map
+  #   csi:
+  #     driver: csi.bpfman.io
+  #     volumeAttributes:
+  #       csi.bpfman.io/program: xdp_stats
+  #       csi.bpfman.io/maps: xdp_stats_map
+  - name: xdp-stats-map
+    hostPath:
+      path: /sys/fs/bpf/xdp_stats_map
+      type: File
   restartPolicy: Never

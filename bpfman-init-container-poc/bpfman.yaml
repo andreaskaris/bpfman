@@ -1,0 +1,56 @@
+# Pod, just for running bpfman privileged in the environment. Not needed for this pod,
+# but added here in case troubleshooting is needed.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bpfman
+spec:
+  containers:
+  - name: bpfman
+    image: quay.io/akaris/bpfman-init-container:latest
+    imagePullPolicy: Always
+    securityContext:
+      privileged: true
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      sleep infinity
+    env:
+    - name: VOLUME_DIR
+      value: /shared
+    volumeMounts:
+    - name: shared-volume
+      mountPath: /shared
+    - name: go-app-counter-maps
+      mountPath: /run/app/maps
+      readOnly: true
+    - name: bpfman-volume
+      mountPath: /run/bpfman
+    - name: bpfman-lib-volume
+      mountPath: /var/lib/bpfman
+    - name: bpf-fs-volume
+      mountPath: /sys/fs/bpf
+  volumes:
+  - name: shared-volume
+    emptyDir: {}
+  - name: go-app-counter-maps
+    emptyDir: {}
+  - name: bpfman-volume
+    hostPath:
+      path: /run/bpfman
+      type: DirectoryOrCreate
+  - name: bpfman-lib-volume
+    hostPath:
+      path: /var/lib/bpfman
+      type: DirectoryOrCreate
+  - name: bpf-fs-volume
+    hostPath:
+      path: /sys/fs/bpf
+      type: Directory
+  - name: xdp-stats-map
+    csi:
+      driver: csi.bpfman.io
+      volumeAttributes:
+        csi.bpfman.io/program: xdp:xdp_stats
+        csi.bpfman.io/maps: xdp_stats_map
+  restartPolicy: Never
